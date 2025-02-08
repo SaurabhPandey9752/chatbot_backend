@@ -7,138 +7,186 @@ import ImageKit from "imagekit";
 import Chat from "./models/chat.js";
 import UserChats from "./models/userChats.js";
 import { ClerkExpressRequireAuth } from "@clerk/clerk-sdk-node";
-import "dotenv/config";
+import dotenv from "dotenv";
 
+// Load environment variables
+dotenv.config();
+
+// Initialize Express app
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
+// Fix for __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const _dirname = path.dirname(_filename);
 
-// ✅ CORS Setup
+// Enable CORS
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: process.env.CLIENT_URL || "*",
     credentials: true,
   })
 );
 
 app.use(express.json());
 
-// ✅ MongoDB Connection
+// Database Connection
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGO, {
+    await mongoose.connect(process.env.MONGODB_URI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
     console.log("✅ Connected to MongoDB");
   } catch (err) {
     console.error("❌ MongoDB Connection Error:", err);
+    process.exit(1); // Exit process if connection fails
   }
 };
-connectDB();
 
-// ✅ ImageKit Configuration
+// Initialize ImageKit
 const imagekit = new ImageKit({
   urlEndpoint: process.env.IMAGE_KIT_ENDPOINT,
   publicKey: process.env.IMAGE_KIT_PUBLIC_KEY,
   privateKey: process.env.IMAGE_KIT_PRIVATE_KEY,
 });
 
-// ✅ Routes
-app.get("/", (req, res) => {
-  res.send("🚀 Backend is working!");
-});
-
-// 🔹 Image Upload Authentication
+// API Routes
 app.get("/api/upload", (req, res) => {
-  const result = imagekit.getAuthenticationParameters();
-  res.send(result);
+  try {
+    const result = imagekit.getAuthenticationParameters();
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Error generating auth parameters:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-// 🔹 Create Chat
+// Create Chat
 app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
-  try {
-    const userId = req.auth?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+  const userId = req.auth.userId;
+  const { text } = req.body;
 
-    const { text } = req.body;
-    const newChat = new Chat({ userId, history: [{ role: "user", parts: [{ text }] }] });
+  if (!text) {
+    return res.status(400).json({ error: "Text is required" });
+  }
+
+  try {
+    const newChat = new Chat({
+      userId,
+      history: [{ role: "user", parts: [{ text }] }],
+    });
+
     const savedChat = await newChat.save();
 
-    // Check if user already has chats
-    const userChats = await UserChats.findOne({ userId });
+    // Find user chats
+    let userChats = await UserChats.findOne({ userId });
 
     if (!userChats) {
-      const newUserChats = new UserChats({ userId, chats: [{ _id: savedChat._id, title: text.substring(0, 40) }] });
-      await newUserChats.save();
+      userChats = new UserChats({
+        userId,
+        chats: [{ _id: savedChat._id, title: text.substring(0, 40) }],
+      });
+
+      await userChats.save();
     } else {
-      await UserChats.updateOne({ userId }, { $push: { chats: { _id: savedChat._id, title: text.substring(0, 40) } } });
+      userChats.chats.push({ _id: savedChat._id, title: text.substring(0, 40) });
+      await userChats.save();
     }
 
     res.status(201).json({ chatId: savedChat._id });
   } catch (err) {
-    console.error("❌ Error creating chat:", err);
-    res.status(500).json({ message: "Error creating chat" });
+    console.error("Error creating chat:", err);
+    res.status(500).json({ error: "Error creating chat" });
   }
 });
 
-// 🔹 Get User Chats
+// Get User Chats
 app.get("/api/userchats", ClerkExpressRequireAuth(), async (req, res) => {
-  try {
-    const userId = req.auth?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+  const userId = req.auth.userId;
 
+  try {
     const userChats = await UserChats.findOne({ userId });
-    res.status(200).json(userChats ? userChats.chats : []);
+
+    if (!userChats) {
+      return res.status(404).json({ error: "No chats found" });
+    }
+
+    res.status(200).json(userChats.chats);
   } catch (err) {
-    console.error("❌ Error fetching user chats:", err);
-    res.status(500).json({ message: "Error fetching user chats" });
+    console.error("Error fetching user chats:", err);
+    res.status(500).json({ error: "Error fetching user chats" });
   }
 });
 
-// 🔹 Get a Specific Chat
+// Get Chat by ID
 app.get("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
-  try {
-    const userId = req.auth?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+  const userId = req.auth.userId;
 
+  try {
     const chat = await Chat.findOne({ _id: req.params.id, userId });
-    if (!chat) return res.status(404).json({ message: "Chat not found" });
+
+    if (!chat) {
+      return res.status(404).json({ error: "Chat not found" });
+    }
 
     res.status(200).json(chat);
   } catch (err) {
-    console.error("❌ Error fetching chat:", err);
-    res.status(500).json({ message: "Error fetching chat" });
+    console.error("Error fetching chat:", err);
+    res.status(500).json({ error: "Error fetching chat" });
   }
 });
 
-// 🔹 Update Chat with New Messages
+// Update Chat
 app.put("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
+  const userId = req.auth.userId;
+  const { question, answer, img } = req.body;
+
+  if (!answer) {
+    return res.status(400).json({ error: "Answer is required" });
+  }
+
+  const newItems = [
+    ...(question ? [{ role: "user", parts: [{ text: question }], ...(img && { img }) }] : []),
+    { role: "model", parts: [{ text: answer }] },
+  ];
+
   try {
-    const userId = req.auth?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    const updatedChat = await Chat.updateOne(
+      { _id: req.params.id, userId },
+      { $push: { history: { $each: newItems } } }
+    );
 
-    const { question, answer, img } = req.body;
-    const newItems = [
-      ...(question ? [{ role: "user", parts: [{ text: question }], ...(img && { img }) }] : []),
-      { role: "model", parts: [{ text: answer }] },
-    ];
+    if (updatedChat.modifiedCount === 0) {
+      return res.status(404).json({ error: "Chat not found or not modified" });
+    }
 
-    const updatedChat = await Chat.updateOne({ _id: req.params.id, userId }, { $push: { history: { $each: newItems } } });
-    res.status(200).json(updatedChat);
+    res.status(200).json({ message: "Chat updated successfully" });
   } catch (err) {
-    console.error("❌ Error updating chat:", err);
-    res.status(500).json({ message: "Error updating chat" });
+    console.error("Error updating chat:", err);
+    res.status(500).json({ error: "Error updating chat" });
   }
 });
 
-// 🔹 Error Handling Middleware
+// Error Handling Middleware
 app.use((err, req, res, next) => {
-  console.error("❌ Server Error:", err.stack);
-  res.status(500).json({ message: "Internal Server Error" });
+  console.error("Unhandled Error:", err.stack);
+  res.status(500).json({ error: "Internal server error" });
 });
 
-// ✅ Export Express App for Vercel
+// Static Files (Vercel Deployment)
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(path.join(__dirname, "../client/dist")));
+
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(__dirname, "../client/dist", "index.html"));
+  });
+}
+
+// Start Server
+app.listen(port, async () => {
+  await connectDB();
+  console.log(🚀 Server running on port ${port});
+});
+
 export default app;
