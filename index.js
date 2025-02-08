@@ -1,24 +1,25 @@
 import express from "express";
 import cors from "cors";
-import path from "path";
-import { fileURLToPath } from "url";
 import mongoose from "mongoose";
-import ImageKit from "imagekit";
-import Chat from "./models/chat.js";
-import UserChats from "./models/userChats.js";
-import { ClerkExpressRequireAuth } from "@clerk/clerk-sdk-node";
 import dotenv from "dotenv";
+import ImageKit from "imagekit";
+import { ClerkExpressRequireAuth } from "@clerk/clerk-sdk-node";
+import { fileURLToPath } from "url";
+import path from "path";
+import Chat from "../models/chat.js";
+import UserChats from "../models/userChats.js";
+import { createServerlessExpressMiddleware } from "@vendia/serverless-express";
 
 // Load environment variables
 dotenv.config();
 
-// Initialize Express app
-const app = express();
-const port = process.env.PORT || 5000;
-
-// Fix for __dirname in ES modules
+// Fix __dirname in ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const _dirname = path.dirname(_filename);
+
+// Initialize Express app
+const app = express();
+app.use(express.json());
 
 // Enable CORS
 app.use(
@@ -28,21 +29,15 @@ app.use(
   })
 );
 
-app.use(express.json());
-
-// Database Connection
-const connectDB = async () => {
-  try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log("✅ Connected to MongoDB");
-  } catch (err) {
-    console.error("❌ MongoDB Connection Error:", err);
-    process.exit(1); // Exit process if connection fails
-  }
-};
+// MongoDB Connection (Optimized for Vercel)
+mongoose.connect(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 5000, // Prevent connection timeout
+  keepAlive: true,
+})
+  .then(() => console.log("✅ Connected to MongoDB"))
+  .catch((err) => console.error("❌ MongoDB Connection Error:", err));
 
 // Initialize ImageKit
 const imagekit = new ImageKit({
@@ -78,8 +73,6 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
     });
 
     const savedChat = await newChat.save();
-
-    // Find user chats
     let userChats = await UserChats.findOne({ userId });
 
     if (!userChats) {
@@ -87,7 +80,6 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
         userId,
         chats: [{ _id: savedChat._id, title: text.substring(0, 40) }],
       });
-
       await userChats.save();
     } else {
       userChats.chats.push({ _id: savedChat._id, title: text.substring(0, 40) });
@@ -168,25 +160,5 @@ app.put("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
   }
 });
 
-// Error Handling Middleware
-app.use((err, req, res, next) => {
-  console.error("Unhandled Error:", err.stack);
-  res.status(500).json({ error: "Internal server error" });
-});
-
-// Static Files (Vercel Deployment)
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "../client/dist")));
-
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(__dirname, "../client/dist", "index.html"));
-  });
-}
-
-// Start Server
-app.listen(port, async () => {
-  await connectDB();
-  console.log(🚀 Server running on port ${port});
-});
-
-export default app;
+// Export for Vercel as Serverless API
+export default createServerlessExpressMiddleware(app);
