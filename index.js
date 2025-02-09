@@ -8,34 +8,40 @@ import Chat from "./models/chat.js";
 import UserChats from "./models/userChats.js";
 import { ClerkExpressRequireAuth } from "@clerk/clerk-sdk-node";
 
-const port = process.env.PORT || 3000;
 const app = express();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+// Enable CORS
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: process.env.CLIENT_URL || "*",
     credentials: true,
   })
 );
 
 app.use(express.json());
 
+// MongoDB Connection
 const connect = async () => {
   try {
-    await mongoose.connect(process.env.MONGO);
-    console.log("Connected to MongoDB");
+    if (mongoose.connection.readyState === 0) {
+      await mongoose.connect(process.env.MONGO);
+      console.log("Connected to MongoDB");
+    }
   } catch (err) {
     console.log(err);
   }
 };
 
+// ImageKit Setup
 const imagekit = new ImageKit({
   urlEndpoint: process.env.IMAGE_KIT_ENDPOINT,
   publicKey: process.env.IMAGE_KIT_PUBLIC_KEY,
   privateKey: process.env.IMAGE_KIT_PRIVATE_KEY,
+});
+
+// Routes
+app.get("/api/healthcheck", (req, res) => {
+  res.status(200).json({ status: "ok" });
 });
 
 app.get("/api/upload", (req, res) => {
@@ -44,6 +50,7 @@ app.get("/api/upload", (req, res) => {
 });
 
 app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
+  await connect();
   const userId = req.auth.userId;
   const { text } = req.body;
 
@@ -85,9 +92,9 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
           },
         }
       );
-
-      res.status(201).send(newChat._id);
     }
+
+    res.status(201).send(savedChat._id);
   } catch (err) {
     console.log(err);
     res.status(500).send("Error creating chat!");
@@ -95,11 +102,11 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
 });
 
 app.get("/api/userchats", ClerkExpressRequireAuth(), async (req, res) => {
+  await connect();
   const userId = req.auth.userId;
 
   try {
     const userChats = await UserChats.find({ userId });
-
     res.status(200).send(userChats[0].chats);
   } catch (err) {
     console.log(err);
@@ -108,11 +115,11 @@ app.get("/api/userchats", ClerkExpressRequireAuth(), async (req, res) => {
 });
 
 app.get("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
+  await connect();
   const userId = req.auth.userId;
 
   try {
     const chat = await Chat.findOne({ _id: req.params.id, userId });
-
     res.status(200).send(chat);
   } catch (err) {
     console.log(err);
@@ -121,8 +128,8 @@ app.get("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
 });
 
 app.put("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
+  await connect();
   const userId = req.auth.userId;
-
   const { question, answer, img } = req.body;
 
   const newItems = [
@@ -150,12 +157,22 @@ app.put("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
   }
 });
 
+// Error Handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(401).send("Unauthenticated!");
 });
 
-// PRODUCTION
+// Handle all other routes
+app.all("*", (req, res) => {
+  res.status(404).json({
+    status: "error",
+    message: "Route not found"
+  });
+});
+
+// Export the app for Vercel
+export default app;
 
 
 app.listen(port, () => {
